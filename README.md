@@ -1,87 +1,125 @@
 # Robinhood / Rare Friends Mint
 
-Node.js 22+。仅针对本次 Rare Friends Genesis，默认命令只读。
-**未启动真实 Mint，未对真实钱包发送任何交易。**
+Node.js 22+，仅支持 EOA，每钱包 Mint 1 个免费 NFT。
+单钱包与多钱包共用预签、广播、回执及运行锁。只有显式 run --live 才广播。
 
-## 安装、测速、检查
-
-在此目录运行：
+## 检查与启动
 
 ~~~powershell
 npm install --ignore-scripts
-node mint.mjs bench
-node mint.mjs check
 npm test
+node mint.mjs check
+node multi-mint.mjs check
+node multi-mint.mjs prepare
+node estimate-gas.mjs
+node multi-mint.mjs bench
 ~~~
 
-bench 向每个节点发送 12 次无效载荷（第一轮冷启动不计入延迟），输出 P50/P95 和失败数。
-只测错误响应的往返时间，不代表节点支持真实广播或交易入块速度；网关也能返回 JSON-RPC 错误。
-跨地区服务器分别运行相同命令，比较节点稳定性与延迟。
+- mint.mjs check：无需私钥，打印链上真实 start/end、免费状态、剩余量、配置地址资格。
+- multi-mint.mjs check：检查已配置钱包的余额、latest/pending nonce、资格及开售时间模拟，不签名、不广播。
+- prepare：检查成功后离线签名验证，仅输出哈希，不保存 raw 或广播。
+- estimate-gas.mjs：对 config 的钱包地址执行三次开售时间覆盖模拟，取最大估算加 25%，打印建议，不自动改配置。
+- bench：无效载荷的 HTTP 往返，不能代表真实交易接收或入块速度。
 
-## 配置
-
-编辑 config.json（可复制成 config.local.json，并设置 $env:MINT_CONFIG='config.local.json'）：
-
-- readRpc：支持 eth_call、区块、余额、nonce、回执的完整 Robinhood RPC。
-- broadcastRpcs：1–4 个广播端点，默认官方排序器和公共 RPC。并发发送完全相同的签名交易。
-- walletAddress：填自己钱包的公开地址，check 才能核对个人 mint 限额；实盘会与私钥地址比对。
-- trigger：chain（默认）等最新区块 timestamp >= startTime；clock 按电脑时间直接发送，低延迟但存在抢早回滚风险。
-- expectedStartTime：1789567220，即 2026-09-16 北京时间 22:00:20。链上发生变化时拒绝发送，需重新核实后修改。
-- gasLimit：**默认 null，不是已经准备好实盘的配置。开售前估算通常回滚。必须提前填入经模拟/可靠估算确定、包含 L1 数据费用的 Gas 上限。**
-  其他交易的 gasUsed 只能参考，不能保证本次需要的 Gas。程序不会猜一个数值并发出去。
-- maxFeeGwei：null 时用准备阶段 eth_gasPrice 的两倍作为费用上限；priority fee=0。
-  该上限用于容纳基础费用变化，不代表加价获得排序优先权。
-- maxGasBudgetEth：默认单笔最大 Gas 预算 0.001 ETH，**不是预计花费**。gasLimit × maxFeePerGas 超预算或余额则停止。
-- prepareSeconds：提前 60 秒准备签名；最后约 15 秒再次检查链上配置、nonce、预热连接。
-- rpcTimeoutMs：默认 3000ms，网络差会超时停止；不应该把高超时当成低延迟优化。
-
-配置中没有私钥字段。带 API key 的 RPC URL 放 config.local.json，勿提交或公开。
-
-## 真正启动
-
-先确认 gasLimit、钱包 ETH、钱包地址和 trigger。
-至少提前 2 分钟运行，保持机器唤醒、网络稳定、系统时钟同步。
-
-Windows PowerShell：
+实盘至少提前两分钟启动，保持机器唤醒：
 
 ~~~powershell
-.\start.ps1
+node multi-mint.mjs run --live
+# 单钱包隐藏输入私钥：
+.start.ps1
 ~~~
 
-它在本机隐藏输入私钥，启动 node mint.mjs run --live，结束后清理父进程环境变量。
-不要把私钥写入命令行历史或发送给他人。JS 内存不能保证安全擦除。
-若执行策略阻止脚本，按自己机器的管理员策略处理，不需要降低全局执行策略。
+双击入口见 [BAT-使用说明.md](BAT-使用说明.md)，多钱包设置见 [MULTI-README.md](MULTI-README.md)。
+run 不带 --live 仍然只读，检查命令不会自动启动实盘。
 
-Linux / bash：
+## 密钥与配置
 
-~~~bash
-read -rsp "Private key: " MINT_PRIVATE_KEY; echo
-export MINT_PRIVATE_KEY
-node mint.mjs run --live
-unset MINT_PRIVATE_KEY
+本地 .ENV / .env 只接受 KEY=value，拒绝裸私钥或夹杂裸私钥的文件。
+照 .env.example 的格式填写；真实密钥不要放命令行、聊天或 Git。
+.ENV、钱包.txt、reports/、*.local.json 已忽略；报告不含签名 raw 或私钥。
+
+MINT_CONFIG 可指定基础配置覆盖文件，MULTI_CONFIG 可指定多钱包覆盖文件。
+带 API key 的标准 WSS URL 通过本地 READ_WS_RPC 设置，不提交真实地址。
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| broadcastRpcs | 官方 sequencer + 官方 RPC | 同一 raw 并发两路，最多支持 8 路 |
+| trigger / wallets[].mode | chain | 所有钱包共用开售块监听 |
+| autoStartTime | true | 启动时取链上 startTime 并固定，运行中变化则停止 |
+| expectedStartTime | 配置快照 | auto 模式不据此排程；关闭 auto 时严格比对 |
+| prepareSeconds | 60 | 提前签名、编码请求、首次预热 |
+| gasLimit | 420000 | 保留现有上限，降低前应核实各钱包估算 |
+| gasPriceMultiplier | 2 | maxFeeGwei 未指定时使用；priority fee=0 |
+| maxFeeGwei | null | 可设置固定帽，低于当前 gasPrice 会停止 |
+| maxGasBudgetEth | 0.001 | 每钱包首次 + 重试最大费用累计上限 |
+| totalGasBudgetEth | 0.006 | 多钱包合计费用上限 |
+| reserveRetryBudget | true | 预算、余额必须覆盖两笔同费用上限交易 |
+| sendTimeoutMs | 1000 | 发送响应期限，超时不等于未入块 |
+| rpcTimeoutMs | 3000 | 常规读取期限 |
+| pollMs | 100 | 共享 HTTP 出块监听，每节点最多一个在途请求 |
+| receiptPollMs | 150 | 回执轮询间隔，多读节点并行 |
+| chainWaitTimeoutSeconds | 60 | 等开售块的最长时间，也用于回滚后等待 |
+| sendOffsetMs | 0 | 相对 startTime；负值仅对 clock 有效，chain 仍须先看到开售块 |
+| allowPartialWallets | true | 仅跳过缺密钥的钱包，错误配置仍停止 |
+| minReadyWallets | 1 | 最少已配置钱包数，可设为 6 |
+
+重试预留不保证能重试。第二笔需要确认首笔回滚、区块未重组、仍有余量/资格、
+nonce 无冲突、当前模拟通过、当前余额及累计预算足够。UNKNOWN/pending 不重试。
+
+## 准备与发射
+
+1. 启动时打印链上时间、价格、剩余量并核对钱包。
+2. T−60s 预签、算哈希、预编码各路 JSON-RPC 字节，使用发送的同一 HTTPS Agent 预热；连接可选标准 WSS。
+3. T−15s 开始复核 drop 指纹、钱包资格、余额、nonce 和费用；必须在 T−5s 前完成。
+4. 保存公开交易哈希，T−10s 至 T−3s 刷新连接，最迟 T−2s 完成。最后两秒不重新模拟或估 Gas。
+5. 触发时写预编码字节，所有钱包开始提交后才查询回执和记录结果。
+6. status=1 且本 NFT 合约 Transfer 从零地址到本钱包才报告软确认成功。
+
+keep-alive 允许复用连接，不能保证服务器不关闭 socket。
+预热只发送无效载荷，不能用真实签名字节提前“预热”。
+任一路 accepted / already known 即记录已提交；nonce too low 只是诊断，不能证明原哈希成功。
+
+## WSS、时间与部署
+
+READ_WS_RPC 必须支持 eth_chainId 和 eth_subscribe("newHeads")。
+先校验链 ID，再接受匹配订阅的有效块头。断线重连，HTTP 保底；未配置时明确使用共享 HTTP。
+
+官方 wss://feed.mainnet.chain.robinhood.com 是 Nitro sequencer feed，不是 newHeads RPC。
+可用提供商或自建完整节点的标准 WSS；不要把 API key 提交进配置。
+默认全部 chain，没有胜率测量时不做 3+3 分组。
+
+秒级链上 timestamp 和网络响应不能证明本机达到毫秒级时钟精度。
+clock 是实验选项；使用前确认 Windows 时间服务 / Linux chrony 同步，避免休眠。
+Node 定时器、GC、系统校时和网络仍会抖动。本工具不修改系统时间或自动部署云主机。
+
+## 报告与恢复
+
+reports/mint-时间.json 记录配置/实际 sendOffsetMs、端点响应耗时及状态、
+触发来源、区块号、transactionIndex、gasUsed、gasUsedForL1、effectiveGasPrice。
+节点没返回的字段记 null。报告只记录 RPC 主机名，不记录完整路径或密钥。
+
+发射前写 reports/pending-mints.json。未知回执或中断后，记录会阻止再次实盘：
+
+~~~powershell
+node recover.mjs
 ~~~
 
-**run --live 是真实发送开关。** node mint.mjs run 不带 --live 仍只读。
-默认 gasLimit=null 的实盘运行可能在开售前 60 秒停止，务必先完成上面的配置。
-程序要求在开售前启动，错过准备窗口则停止，不自动追单。
+恢复只查询原哈希，多 RPC 查回执；UNKNOWN 时自动查 Blockscout API，输出原交易链接。
+浏览器索引只作旁证，不代替验证后的 RPC 回执、不授权重发。
+未确认的哈希继续阻断。正常退出会清理确定未发送的计划；异常退出可能保留未发送计划，需人工核对。
 
-## 运行行为
+单钱包、多钱包和显式实盘测试共用 multi-run.lock。
+异常退出留下锁时，先确认旧进程已结束、核对原哈希，再处理残留锁并运行恢复。
+锁不能阻止其他程序/机器用同一钱包；预签后不要另发交易。退出进程不能撤回已广播交易。
 
-1. 校验 chain ID=4663、免费公售、时间、剩余量、该地址累计 mint 限额、允许的 SeaDrop 与费用地址。
-2. 同一区块读取配置；准备时检查 latest/pending nonce 相等，余额足够覆盖费用上限。
-3. 在内存签名一笔 quantity=1、value=0 的交易。签名和 calldata 不写日志。
-4. 开售前再读配置及 nonce，按 trigger 发送到全部广播端点；所有路径都是同一交易哈希。
-5. 无论 RPC 成功、失败或超时都查询原交易回执，仅首次明确回滚时，在链上已开售、仍有余量、资格有效、nonce 无冲突且当前模拟通过后，用下一 nonce 最多重试一次。首次与重试的费用上限合计不得超过原预算；回执未知或 pending 不重试。
-6. receipt.status=1 且发现本合约从零地址到自己钱包的 Transfer 才报告 Mint 已入块（软确认）。
-   超时只报告状态未知；去浏览器查原哈希，勿直接再发另一笔。
+## 测速边界
 
-预签后不要再用这个钱包做其他交易。
-最后检查与广播间仍存在状态变化窗口（售罄、费用变化、项目方改配置等）。
-clock 模式没有毫秒级精度保证；系统调度、网络抖动和链上时间偏差都会影响结果。
-Ctrl+C 在广播前可停止；广播后的交易不能靠退出程序撤回。
-工具没有私有排序通道，也不保证排序优先或 Mint 成功。
+两条默认路径是减少并发的基线，不是实测赢家。
+拒包 RTT、入口 accepted RTT、最终 block/index 是不同指标。
+同一 raw 同时发多入口时，回执无法识别究竟哪条路径先到排序器。
+机房选择、负偏移和真实入块速度需在目标环境独立实测，不保证 Mint 排序或成功。
+eth_sendRawTransactionSync 未启用，端点兼容性未验证，它也不改变 FCFS 排序。
 
-官方参考：
-- https://docs.robinhood.com/chain/connecting/
-- https://docs.robinhood.com/chain/gas-and-fees/
-- https://github.com/ProjectOpenSea/seadrop/blob/main/src/SeaDrop.sol
+参考：[官方连接说明](https://docs.robinhood.com/chain/connecting/)、
+[FCFS 说明](https://docs.robinhood.com/chain/)、
+[Blockscout 交易 API](https://docs.blockscout.com/api-reference/get-transaction-info)。

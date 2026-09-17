@@ -16,7 +16,7 @@ export async function prepareRetry({plan,receipt,signer,read,cfg,reserve=()=>{},
   if(!original||BigInt(original.status)!==0n||!same(original.blockHash,receipt.blockHash))throw Error('Reverted receipt changed');
   const canonical=await read('eth_getBlockByNumber',[receipt.blockNumber,false]);
   if(!canonical||!same(canonical.hash,receipt.blockHash))throw Error('Reverted block changed');
-  const deadline=now()+10000;
+  const deadline=now()+(cfg.chainWaitTimeoutSeconds??60)*1000;
   let block;
   while(true){
     block=await read('eth_getBlockByNumber',['latest',false]);

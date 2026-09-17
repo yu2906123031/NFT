@@ -1,10 +1,10 @@
 import {readFile} from 'node:fs/promises';
-import {parseEnv} from 'node:util';
+import {loadLocalEnv} from './env.mjs';
 import {Wallet,Transaction,formatEther,parseUnits,Interface} from 'ethers';
 import {CHAIN,NFT,SEA,abi,same,mintData,validateState,validateCost} from './core.mjs';
 try {
-const source=(await readFile(new URL('.ENV',import.meta.url),'utf8')).trim();
-const env=/^(0x)?[a-fA-F0-9]{64}$/.test(source)?{MINT_PRIVATE_KEY:source.startsWith('0x')?source:'0x'+source}:parseEnv(source);
+await loadLocalEnv();
+const env=process.env;
 let wallet;
 try{wallet=new Wallet(env.MINT_PRIVATE_KEY||env.PRIVATE_KEY||process.env.MINT_PRIVATE_KEY||'');}catch{throw Error('Invalid private key format');}
 const cfg=JSON.parse((await readFile(new URL('./config.json',import.meta.url),'utf8')).replace(/^\uFEFF/,''));

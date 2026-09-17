@@ -1,3 +1,5 @@
+import {acquireRunLock} from './run-lock.mjs';
+import {assertNoPending} from './journal.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {Wallet,Transaction,keccak256,formatEther,toQuantity,Interface} from 'ethers';
 import {loadLocalEnv} from './env.mjs';
@@ -6,8 +8,11 @@ import {CHAIN,NFT,SEA,abi,mintData,validateState,same,validateCost,broadcast,sle
 const root=new URL('./',import.meta.url);
 const record=new URL('live-mint-test-result.json',root);
 const pool=new RpcPool({timeoutMs:5000,allowBroadcast:process.argv.includes('--live')});
+let releaseLock;
 async function main(){
   if(!process.argv.includes('--live'))throw Error('Explicit --live required');
+  releaseLock=await acquireRunLock(new URL('multi-run.lock',root));
+  await assertNoPending();
   const cfg=JSON.parse((await readFile(new URL('config.json',root),'utf8')).replace(/^\uFEFF/,''));
   const multi=JSON.parse((await readFile(new URL('multi-config.json',root),'utf8')).replace(/^\uFEFF/,''));
   const urls=[...new Set(multi.broadcastRpcs)];
@@ -79,4 +84,4 @@ async function main(){
   await writeFile(record,JSON.stringify({...summary,status:'UNKNOWN_CHECK_ORIGINAL_HASH'},null,2));
   throw Error('Receipt unknown; inspect saved hash, do not send another test');
 }
-main().catch(e=>{const m=String(e.message);console.error(m.length>180||/private|secret|0x[0-9a-f]{64}/i.test(m)?'Test failed; sensitive details suppressed':m);process.exitCode=1;}).finally(async()=>{pool.close();});
+main().catch(e=>{const m=String(e.message);console.error(m.length>180||/private|secret|0x[0-9a-f]{64}/i.test(m)?'Test failed; sensitive details suppressed':m);process.exitCode=1;}).finally(async()=>{pool.close();if(releaseLock)await releaseLock();});

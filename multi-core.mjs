@@ -8,7 +8,7 @@ export function loadWallets(entries,env) {
     if(!['clock','chain'].includes(entry.mode))throw Error('Invalid mode: '+entry.label);
     if(!/^MINT_PRIVATE_KEY(?:_[1-6])?$/.test(entry.keyEnv??''))throw Error('Invalid keyEnv: '+entry.label);
     const key=env[entry.keyEnv];
-    if(!key){issues.push({label:entry.label,problem:'missing '+entry.keyEnv});continue;}
+    if(!key){issues.push({label:entry.label,kind:'missing',problem:'missing '+entry.keyEnv});continue;}
     let signer;
     try{signer=new Wallet(key);}catch{issues.push({label:entry.label,problem:'invalid private key format'});continue;}
     if(entry.address&&!same(entry.address,signer.address)){issues.push({label:entry.label,problem:'address mismatch'});continue;}
@@ -35,4 +35,13 @@ export async function dispatchGroups(plans,gates,send){
     return Promise.allSettled(group.map(async plan=>send(plan)));
   }));
 }
-export const fanout=(plan,urls,rpc,report)=>broadcast(urls,plan.raw,plan.hash,rpc,(i,ok,ms)=>report(plan.label,i,ok,ms));
+export const fanout=(plan,urls,rpc,report)=>broadcast(urls,plan.raw,plan.hash,rpc,(i,ok,ms,status)=>report(plan.label,i,ok,ms,status));
+
+export function selectWallets(result,{allowPartialWallets=false,minReadyWallets=1}={}){
+  const {loaded,issues}=result;
+  if(issues.some(i=>i.kind!=='missing'))throw Error('Invalid wallet configuration; no broadcast');
+  if(issues.length&&!allowPartialWallets)throw Error('All enabled wallets must be configured before live start');
+  if(!Number.isInteger(minReadyWallets)||minReadyWallets<1||minReadyWallets>6||loaded.length<minReadyWallets)
+    throw Error('Not enough ready wallets');
+  return loaded;
+}

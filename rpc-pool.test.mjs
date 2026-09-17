@@ -46,3 +46,48 @@ test('broadcast probe accepts invalid-payload codes but rejects unavailable meth
     for(code of [-32601,-32603,429,undefined])await assert.rejects(pool.probe('https://example.invalid'),/unavailable/);
   }finally{pool.close();}
 });
+
+test('broadcast payload is encoded before trigger without opening a connection',async t=>{
+  let requests=0,sent;
+  t.mock.method(https,'request',(url,options,callback)=>{
+    requests++;
+    const req=new EventEmitter();
+    req.end=body=>{
+      sent=JSON.parse(body);
+      queueMicrotask(()=>{
+        const res=new EventEmitter();res.statusCode=200;res.setEncoding=()=>{};
+        callback(res);res.emit('data',JSON.stringify({jsonrpc:'2.0',id:sent.id,result:'0x'+'ab'.repeat(32)}));res.emit('end');
+      });
+    };
+    return req;
+  });
+  const pool=new RpcPool({allowBroadcast:true});
+  try{
+    const params=['signed-original'];
+    const send=pool.prepareCall('https://example.invalid','eth_sendRawTransaction',params);
+    params[0]='changed-after-preparation';
+    assert.equal(requests,0);
+    await send();
+    assert.equal(requests,1);assert.deepEqual(sent.params,['signed-original']);
+  }finally{pool.close();}
+});
+
+test('server broadcast errors expose controlled classifications only',async t=>{
+  let message='already known secret-value';
+  t.mock.method(https,'request',(url,options,callback)=>{
+    const req=new EventEmitter();
+    req.end=body=>queueMicrotask(()=>{
+      const res=new EventEmitter();res.statusCode=200;res.setEncoding=()=>{};callback(res);
+      res.emit('data',JSON.stringify({jsonrpc:'2.0',id:JSON.parse(body).id,error:{code:-32000,message}}));res.emit('end');
+    });
+    return req;
+  });
+  const pool=new RpcPool({allowBroadcast:true});
+  try{
+    await assert.rejects(pool.call('https://example.invalid','eth_sendRawTransaction',['signed']),
+      e=>e.broadcastStatus==='already_known'&&!e.message.includes('secret-value'));
+    message='nonce too low secret-value';
+    await assert.rejects(pool.call('https://example.invalid','eth_sendRawTransaction',['signed']),
+      e=>e.broadcastStatus==='nonce_too_low'&&!e.message.includes('secret-value'));
+  }finally{pool.close();}
+});

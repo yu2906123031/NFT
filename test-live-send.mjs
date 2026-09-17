@@ -1,3 +1,4 @@
+import {assertNoPending} from './journal.mjs';
 import {readFile,open,unlink,writeFile} from 'node:fs/promises';
 import {Wallet,Transaction,keccak256,formatEther,toQuantity} from 'ethers';
 import {loadLocalEnv} from './env.mjs';
@@ -15,6 +16,7 @@ async function main(){
   const urls=[...new Set(multi.broadcastRpcs)];
   for(const url of [cfg.readRpc,...urls])if(new URL(url).protocol!=='https:')throw Error('HTTPS required');
   const handle=await open(lock,'wx');locked=true;await handle.close();
+  await assertNoPending();
   try{await readFile(record);throw Error('Test record already exists; do not send again');}catch(e){if(e.code!=='ENOENT')throw e;}
   await loadLocalEnv();
   let wallet;try{wallet=new Wallet(process.env.MINT_PRIVATE_KEY||'');}catch{throw Error('Invalid local wallet key');}

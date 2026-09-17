@@ -29,6 +29,10 @@ export function createReadFallback(urls,call,{now=Date.now}={}){
         return result;
       }));}catch{return null;}
     }
+    if(method==='eth_getBlockByNumber'&&params[0]==='latest'){
+      try{return await Promise.any(urls.map(async url=>validateRead(method,params,await call(url,method,params),now())));}
+      catch{throw Error('All read endpoints failed for '+method);}
+    }
     for(const url of urls){
       try{return validateRead(method,params,await call(url,method,params),now());}catch{}
     }

@@ -37,8 +37,14 @@ export async function broadcast(urls, raw, hash, rpc, report = () => {}) {
     try {
       const result = await rpc(url, 'eth_sendRawTransaction', [raw]);
       if (typeof result !== 'string' || !same(result, hash)) throw Error('Unexpected transaction hash');
-      report(i, true, Math.round(performance.now()-t));
+      report(i, true, Math.round(performance.now()-t), 'accepted');
       return result;
-    } catch (e) { report(i, false, Math.round(performance.now()-t)); throw e; }
+    } catch (e) {
+      const status=e.broadcastStatus??'error_or_timeout';
+      report(i, status==='already_known', Math.round(performance.now()-t), status);
+      if(status==='already_known')return hash;
+      // nonce_too_low may refer to a DIFFERENT transaction: keep observing this hash.
+      throw e;
+    }
   }));
 }

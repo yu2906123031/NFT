@@ -1,10 +1,15 @@
+import {explorerEvidence} from './explorer.mjs';
+import {HeadWatcher} from './head-watcher.mjs';
+import {runtimeOptions,checkRetryReserve,pinStartTime,receiptMetrics} from './runtime.mjs';
+import {acquireRunLock} from './run-lock.mjs';
+import {assertNoPending,savePending,writeRunReport} from './journal.mjs';
 import {createReadFallback} from './rpc-read.mjs';
 import {prepareRetry,retryBudget} from './retry.mjs';
 import {readFile} from 'node:fs/promises';
 import {parseUnits,formatEther,toQuantity,keccak256,ZeroAddress,Transaction} from 'ethers';
 import {loadLocalEnv} from './env.mjs';
 import {CHAIN,NFT,SEA,abi,mintData,validateState,validateCost,same,sleep} from './core.mjs';
-import {loadWallets,checkTotalBudget,waitUntil,dispatchGroups,fanout} from './multi-core.mjs';
+import {loadWallets,selectWallets,checkTotalBudget,waitUntil,dispatchGroups,fanout} from './multi-core.mjs';
 import {RpcPool} from './rpc-pool.mjs';
 
 const root=new URL('./',import.meta.url);
@@ -14,8 +19,11 @@ async function main(){
   if(!['check','prepare','bench','run'].includes(command))throw Error('Usage: node multi-mint.mjs check|prepare|bench|run [--live]');
   const live=command==='run'&&process.argv.includes('--live');
   await loadLocalEnv();
-  const base=await json(new URL('config.json',root));
-  const cfg={...base,...await json(process.env.MULTI_CONFIG||new URL('multi-config.json',root))};
+  const base=await json(process.env.MINT_CONFIG||new URL('config.json',root));
+  const single=process.env.MINT_SINGLE==='1';
+  const cfg=runtimeOptions(single?{...base,readRpcs:base.readRpcs??[base.readRpc],totalGasBudgetEth:base.maxGasBudgetEth,
+    wallets:[{label:'wallet1',keyEnv:'MINT_PRIVATE_KEY',address:base.walletAddress||process.env.WALLET_ADDRESS,mode:base.trigger}]}:
+    {...base,...await json(process.env.MULTI_CONFIG||new URL('multi-config.json',root))});
   const urls=[...new Set(cfg.broadcastRpcs)],readUrls=[...new Set(cfg.readRpcs||[cfg.readRpc])];
   if(!urls.length||urls.length>8||!readUrls.length||readUrls.length>3)throw Error('Use 1-8 broadcast and 1-3 read endpoints');
   for(const url of [...urls,...readUrls])if(new URL(url).protocol!=='https:')throw Error('HTTPS endpoints required');
@@ -24,15 +32,22 @@ async function main(){
   }
   if(!Number.isSafeInteger(cfg.expectedStartTime)||!Number.isSafeInteger(cfg.gasLimit)||cfg.gasLimit<21000)throw Error('Set expectedStartTime and verified gasLimit');
   const reads=new RpcPool({timeoutMs:cfg.rpcTimeoutMs,sockets:8});
-  const writes=new RpcPool({timeoutMs:cfg.rpcTimeoutMs,sockets:6,allowBroadcast:live});
+  const writes=new RpcPool({timeoutMs:cfg.sendTimeoutMs,sockets:6,allowBroadcast:live});
   const activeReads=[];
+  let releaseLock,watcher,journalOwned=false;
+  const sentLabels=new Set();
+  const runReport={startedAt:new Date().toISOString(),routes:urls.map((url,index)=>({index,host:new URL(url).hostname})),attempts:[],outcomes:[]};
+  const unresolved=new Map();
+  let journalQueue=Promise.resolve();
+  const updateJournal=()=>{const snapshot=[...unresolved.values()];journalQueue=journalQueue.then(()=>savePending(snapshot));return journalQueue;};
   try{
+    if(live){releaseLock=await acquireRunLock(new URL('multi-run.lock',root));await assertNoPending();}
     if(command==='bench'){
       console.log('Invalid-payload latency, NOT real inclusion latency. No valid transaction sent.');
       const result=await Promise.allSettled(urls.map(async(url,index)=>{
         const times=[];let failures=0;
         for(let i=0;i<12;i++){
-          try{const ms=await writes.probe(url);if(i)times.push(ms);}catch{failures++;}
+          try{const ms=await writes.probe(url,cfg.rpcTimeoutMs);if(i)times.push(ms);}catch{failures++;}
           await sleep(250);
         }
         times.sort((a,b)=>a-b);
@@ -44,9 +59,9 @@ async function main(){
     const {loaded:wallets,issues}=loadWallets(cfg.wallets,process.env);
     for(const key of Object.keys(process.env))if(/^MINT_PRIVATE_KEY(?:_[1-6])?$/.test(key)||key==='PRIVATE_KEY')delete process.env[key];
     for(const issue of issues)console.log(issue);
-    if(live&&issues.length)throw Error('All enabled wallets must be configured before live start');
+    selectWallets({loaded:wallets,issues},cfg);
     if(!wallets.length)throw Error('No configured wallets');
-    const validations=await Promise.allSettled(readUrls.map(async(url,i)=>{
+    await Promise.allSettled(readUrls.map(async(url,i)=>{
       if(BigInt(await reads.call(url,'eth_chainId'))!==CHAIN)throw Error('Wrong read chain');
       activeReads.push(url);
       console.log('Read endpoint '+i+' chain verified');
@@ -69,6 +84,9 @@ async function main(){
       ]);
       const s={chain:CHAIN,now:BigInt(block.timestamp),block:block.number,allowed:allowed[0],drop:drop[0],fees:fees[0],
         userMinted:stats[0],minted:stats[1],maximum:stats[2],price:BigInt(price)};
+      console.log({startUTC:new Date(Number(s.drop.startTime)*1000).toISOString(),
+        endUTC:new Date(Number(s.drop.endTime)*1000).toISOString(),remaining:String(s.maximum-s.minted),
+        mintPriceWei:String(s.drop.mintPrice),chainTimeUTC:new Date(Number(s.now)*1000).toISOString()});
       validateState(s,cfg);
       return s;
     }
@@ -92,6 +110,7 @@ async function main(){
           const result=await read('eth_call',[{from:w.address,to:SEA,data,value:'0x0',gas:toQuantity(gas)},s.block,{}, {time:toQuantity(s.drop.startTime+1n)}]);
           if(result!=='0x')throw Error('Unexpected simulation return');
         }
+        if(BigInt(pending)>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Invalid nonce');
         const tx={type:2,chainId:CHAIN,to:SEA,data,value:0n,nonce:Number(BigInt(pending)),gasLimit:gas,maxFeePerGas:fee,maxPriorityFeePerGas:0n};
         return {label:w.label,mode:w.mode,address:w.address,signer:w.signer,cap,tx,balance:BigInt(balance)};
       }));
@@ -103,6 +122,7 @@ async function main(){
         }else{failed=true;console.log({label:wallets[i].label,problem:r.reason.message});}
       });
       const total=checkTotalBudget(plans,cfg.totalGasBudgetEth);
+      checkRetryReserve(plans,cfg);
       console.log('Combined maximum cost '+formatEther(total)+' ETH / budget '+cfg.totalGasBudgetEth+' ETH');
       return {plans,failed};
     }
@@ -115,16 +135,18 @@ async function main(){
       }));
     }
     let s=await snapshot();
-    const start=Number(s.drop.startTime)*1000;
+    const start=pinStartTime(cfg,s.drop);
+    runReport.startUTC=new Date(start).toISOString();
+    runReport.configuredSendOffsetMs=cfg.sendOffsetMs;
     console.log({startUTC:new Date(start).toISOString(),remaining:String(s.maximum-s.minted),configuredWallets:wallets.length,missingWallets:issues.length,broadcastRoutes:urls.length});
     if(!live){
       const checked=await collect(s,true);
-      if(command==='prepare'&&!checked.failed&&!issues.length){
+      if(command==='prepare'&&!checked.failed){
         const signed=await sign(checked.plans);
         for(const p of signed)console.log({label:p.label,offlineSignature:'verified',hash:p.hash});
       }
-      console.log('READ ONLY / NO BROADCAST. '+(issues.length||checked.failed?'NOT READY: resolve reported wallets.':'Checks passed for all enabled wallets.'));
-      if(issues.length||checked.failed)process.exitCode=2;
+      console.log('READ ONLY / NO BROADCAST. '+(checked.failed?'NOT READY: resolve reported wallets.':'Checks passed for '+wallets.length+' configured wallets.'));
+      if(checked.failed)process.exitCode=2;
       return;
     }
     if(Date.now()>=start-30000||s.now>=s.drop.startTime)throw Error('Start live mode at least 30 seconds before opening');
@@ -136,6 +158,25 @@ async function main(){
     const prepared=await collect(s,true);
     if(prepared.failed)throw Error('Preparation failed; no broadcast');
     const plans=await sign(prepared.plans);
+    const preparedWrites=new Map();
+    const prepareWrites=p=>preparedWrites.set(p.raw,new Map(urls.map(url=>[url,writes.prepareCall(url,'eth_sendRawTransaction',[p.raw])])));
+    plans.forEach(prepareWrites);
+    const sendPrepared=(url,method,[raw])=>{
+      const send=preparedWrites.get(raw)?.get(url);
+      if(method!=='eth_sendRawTransaction'||!send)throw Error('Broadcast bytes were not prepared');
+      return send();
+    };
+    watcher=new HeadWatcher({urls:activeReads,rpc:reads.call.bind(reads),wsUrl:process.env.READ_WS_RPC||'',
+      pollMs:cfg.pollMs,timeoutMs:Math.min(cfg.rpcTimeoutMs,1000)}).start();
+    if(!process.env.READ_WS_RPC)console.log('No READ_WS_RPC configured; shared HTTP opening-block watcher enabled.');
+    const warmConnections=async()=>{
+      const result=await Promise.allSettled(urls.map(async(url,index)=>{
+        const replies=await Promise.allSettled(Array.from({length:plans.length},()=>writes.probe(url,1000)));
+        return {endpoint:index,connections:replies.filter(r=>r.status==='fulfilled').length};
+      }));
+      return result.filter(r=>r.status==='fulfilled').map(r=>r.value);
+    };
+    console.log({earlyWarmup:await warmConnections()});
     const reserveRetry=retryBudget(plans.map(p=>p.cap),cfg.totalGasBudgetEth);
     for(const p of [...initial.plans,...prepared.plans])p.signer=null;
     for(const p of plans)console.log({label:p.label,mode:p.mode,hash:p.hash,nonce:p.tx.nonce});
@@ -146,54 +187,50 @@ async function main(){
     if(last.failed)throw Error('Final wallet check failed');
     for(const p of plans){
       const current=last.plans.find(x=>x.label===p.label);
-      if(current.tx.nonce!==p.tx.nonce||current.balance<p.cap||final.price>p.tx.maxFeePerGas)throw Error('Nonce/balance/fee changed: '+p.label);
+      if(current.tx.nonce!==p.tx.nonce||current.balance<p.cap*(cfg.reserveRetryBudget?2n:1n)||final.price>p.tx.maxFeePerGas)throw Error('Nonce/balance/fee changed: '+p.label);
     }
-    if(Date.now()>=start-2500)throw Error('Final checks missed warm-up window');
-    await waitUntil(start-2500);
-    // Enough simultaneous requests to open one reusable connection per wallet/endpoint.
-    const warm=await Promise.allSettled(urls.map(async(url,i)=>{
-      const r=await Promise.allSettled(Array.from({length:plans.length},()=>writes.probe(url,1000)));
-      const count=r.filter(x=>x.status==='fulfilled').length;
-      console.log('Endpoint '+i+' warm responses '+count+'/'+plans.length);
-      return count;
-    }));
-    if(!warm.some(r=>r.status==='fulfilled'&&r.value>0))throw Error('No warmed broadcast endpoint');
-    if(Date.now()>=start)throw Error('Preparation missed trigger; no late automatic send');
+    if(Date.now()>=start-5000)throw Error('Final checks missed T-5s cutoff');
+    // Persist only public hashes before entering the final warm/trigger phase.
+    for(const p of plans)unresolved.set(p.label,p);
+    await updateJournal();
+    journalOwned=true;
+    await waitUntil(start-10000);
+    let warm=[];
+    while(Date.now()<start-3000){
+      warm=await warmConnections();
+      await waitUntil(Math.min(start-3000,Date.now()+2000));
+    }
+    if(!warm.some(r=>r.connections>0))throw Error('No warmed broadcast endpoint');
+    if(Date.now()>=start-2000)throw Error('Warm-up missed T-2s cutoff');
     const gates={
-      clock:async()=>{await waitUntil(start);if(Date.now()-start>1000)throw Error('Clock trigger more than 1s late');},
+      clock:async()=>{
+        await waitUntil(start+cfg.sendOffsetMs);
+        if(Date.now()-(start+cfg.sendOffsetMs)>1000)throw Error('Clock trigger more than 1s late');
+        if(Date.now()>Number(s.drop.endTime)*1000)throw Error('Sale ended');
+      },
       chain:async()=>{
-        await waitUntil(start-500);
-        while(Date.now()<start+10000){
-          try{
-            await Promise.any(activeReads.map(async url=>{
-              const b=await reads.call(url,'eth_getBlockByNumber',['latest',false],Math.min(cfg.rpcTimeoutMs,1000));
-              const timestamp=BigInt(b.timestamp);
-              if(timestamp<s.drop.startTime||timestamp>s.drop.endTime)throw Error('Not opening block');
-              if(Math.abs(Date.now()-Number(timestamp)*1000)>15000)throw Error('Stale block');
-              return b;
-            }));
-            return;
-          }catch{await sleep(cfg.pollMs);}
-        }
-        throw Error('No opening block observed within 10s');
+        const result=await watcher.waitForOpen(s.drop.startTime,s.drop.endTime,cfg.chainWaitTimeoutSeconds*1000);
+        runReport.triggerSource=result.source;
+        // Negative offsets are clock-only: chain mode never sends before an opening head.
+        if(cfg.sendOffsetMs>0)await waitUntil(start+cfg.sendOffsetMs);
       }
     };
     async function observe(p){
       const deadline=Date.now()+cfg.receiptTimeoutSeconds*1000;
       while(Date.now()<deadline){
         let receipt;
-        try{receipt=await read('eth_getTransactionReceipt',[p.hash]);}catch{await sleep(500);continue;}
+        try{receipt=await read('eth_getTransactionReceipt',[p.hash]);}catch{await sleep(cfg.receiptPollMs);continue;}
         if(receipt){
-          if(!same(receipt.from,p.address)||!same(receipt.to,SEA)){await sleep(500);continue;}
-          if(BigInt(receipt.status)===0n)return {label:p.label,hash:p.hash,status:'REVERTED',receipt};
+          if(!same(receipt.from,p.address)||!same(receipt.to,SEA)){await sleep(cfg.receiptPollMs);continue;}
+          if(BigInt(receipt.status)===0n)return {label:p.label,hash:p.hash,status:'REVERTED',...receiptMetrics(receipt),receipt};
           if(BigInt(receipt.status)!==1n)throw Error('Invalid receipt status');
           const logs=receipt.logs.filter(l=>same(l.address,NFT)).map(l=>{try{return abi.parseLog(l);}catch{return null;}});
           const mint=logs.find(l=>l?.name==='Transfer'&&same(l.args.from,ZeroAddress)&&same(l.args.to,p.address));
-          return {label:p.label,hash:p.hash,status:mint?'MINT_INCLUDED_SOFT':'NO_EXPECTED_MINT_EVENT',tokenId:mint?String(mint.args.tokenId):null};
+          return {label:p.label,hash:p.hash,status:mint?'MINT_INCLUDED_SOFT':'NO_EXPECTED_MINT_EVENT',tokenId:mint?String(mint.args.tokenId):null,...receiptMetrics(receipt)};
         }
-        await sleep(500);
+        await sleep(cfg.receiptPollMs);
       }
-      return {label:p.label,hash:p.hash,status:'UNKNOWN_CHECK_EXPLORER'};
+      return {label:p.label,hash:p.hash,status:'UNKNOWN_CHECK_EXPLORER',explorer:'https://robinhoodchain.blockscout.com/tx/'+p.hash,explorerEvidence:await explorerEvidence(p)};
     }
     const pendingSubmissions=[];
     const outcomes=await dispatchGroups(plans,gates,async initialPlan=>{
@@ -201,18 +238,30 @@ async function main(){
       const wallet=wallets.find(w=>w.label===p.label);
       try{
         for(let attempt=0;attempt<2;attempt++){
-          const sentAt=Date.now();
-          const submission=fanout(p,urls,writes.call.bind(writes),(label,index,ok,ms)=>console.log({label,attempt,endpoint:index,accepted:ok,responseMs:ms}));
-          console.log({label:p.label,attempt,mode:p.mode,hash:p.hash,sendOffsetMs:sentAt-start});
+          const attemptReport={label:p.label,attempt,mode:p.mode,hash:p.hash,sentAt:Date.now(),sendOffsetMs:Date.now()-start,submitted:false,routes:[]};
+          sentLabels.add(p.label);
+          const submission=fanout(p,urls,sendPrepared,(label,index,ok,ms,status)=>{
+            attemptReport.routes.push({endpoint:index,accepted:ok,responseMs:ms,status});
+            if(ok)attemptReport.submitted=true;
+          });
+          runReport.attempts.push(attemptReport);
           pendingSubmissions.push(submission);
+          // Yield once so ALL wallets write their bytes before starting receipt I/O or logging.
+          await new Promise(resolve=>setImmediate(resolve));
           const result=await observe(p);
 
           const {receipt,...summary}=result;
+          attemptReport.observedAfterMs=Date.now()-attemptReport.sentAt;
+          runReport.outcomes.push(summary);
+          if(result.status!=='UNKNOWN_CHECK_EXPLORER')unresolved.delete(p.label);
           console.log(summary);
           if(result.status==='MINT_INCLUDED_SOFT')return summary;
           if(result.status!=='REVERTED'||attempt===1){process.exitCode=2;return summary;}
           try{
             p=await prepareRetry({plan:p,receipt,signer:wallet.signer,read,cfg,reserve:reserveRetry});
+            prepareWrites(p);
+            unresolved.set(p.label,p);
+            await updateJournal();
             console.log({label:p.label,status:'RETRY_READY',hash:p.hash,nonce:p.tx.nonce});
           }catch(e){
             console.log({label:p.label,status:'RETRY_SKIPPED',reason:e.message});
@@ -222,12 +271,31 @@ async function main(){
       }finally{wallet.signer=null;}
     });
     await Promise.allSettled(pendingSubmissions);
+    for(const p of plans)if(!sentLabels.has(p.label))unresolved.delete(p.label);
+    await updateJournal();
     outcomes.forEach((r,i)=>{
       if(r.status==='rejected'){console.log({group:['clock','chain'][i],status:'NOT_SENT',reason:r.reason.message});process.exitCode=2;}
       else for(const wallet of r.value)if(wallet.status==='rejected'){console.log('Wallet monitoring failed; verify previously printed hash');process.exitCode=2;}
     });
+  }catch(e){
+    const message=String(e.message??'Failure');
+    runReport.error=message.length>180||/private|secret/i.test(message)?'Operation failed; sensitive details suppressed':message;
+    throw e;
   }finally{
-    reads.close();writes.close();
+    watcher?.close();reads.close();writes.close();
+    if(live&&releaseLock){
+      runReport.finishedAt=new Date().toISOString();
+      try{
+        if(journalOwned){
+          // A controlled pre-send failure must not leave a false UNKNOWN record.
+          for(const [label] of unresolved)if(!sentLabels.has(label))unresolved.delete(label);
+          await updateJournal();
+        }
+        runReport.unresolved=[...unresolved.values()].map(p=>({label:p.label,hash:p.hash}));
+        console.log('Run report: '+decodeURIComponent((await writeRunReport(runReport)).pathname));
+      }
+      finally{await releaseLock();}
+    }
   }
 }
 main().catch(e=>{

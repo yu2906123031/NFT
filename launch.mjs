@@ -3,6 +3,7 @@ import {createWriteStream} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {once} from 'node:events';
+import {saleStatus} from './sale-status.mjs';
 const root=fileURLToPath(new URL('./',import.meta.url));
 process.chdir(root);
 const mode=process.argv[2];
@@ -36,15 +37,18 @@ try{
  await stage('Environment, configuration and launch window',async()=>{
   if(Number(process.versions.node.split('.')[0])<22)throw Error('Node.js 22+ required');
   const json=async p=>JSON.parse((await readFile(p,'utf8')).replace(/^\uFEFF/,''));
-  cfg={...await json('config.json'),...await json(process.env.MULTI_CONFIG||'multi-config.json')};
+  cfg={...await json(process.env.MINT_CONFIG||'config.json'),...await json(process.env.MULTI_CONFIG||'multi-config.json')};
   if(!Number.isSafeInteger(cfg.expectedStartTime))throw Error('Invalid expectedStartTime');
   print('Node: '+process.version);
-  print('Opening (Beijing): '+new Date(cfg.expectedStartTime*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}));
+  const sale=await saleStatus(cfg);
+  print('On-chain sale: '+JSON.stringify(sale));
+  if(!sale.eligible)throw Error(sale.reason);
+  if(mode==='live'&&Date.now()>=Date.parse(sale.startUTC)-30000)throw Error('Too late: live start requires at least 30 seconds before opening');
   for(const w of cfg.wallets.filter(w=>w.enabled!==false))print(w.label+': '+w.mode);
   print('Broadcast endpoints: '+cfg.broadcastRpcs.length+'; read endpoints: '+cfg.readRpcs.length);
   print('Retry: at most once after confirmed revert, if supply/eligibility/simulation/budgets permit.');
   print('Wallet budget ETH: '+cfg.maxGasBudgetEth+'; combined budget ETH: '+cfg.totalGasBudgetEth);
-  if(!cfg.autoStartTime && Date.now()>=cfg.expectedStartTime*1000-30000)throw Error('Too late: live start requires at least 30 seconds before opening');
+  if(mode==='live'&&!cfg.autoStartTime && Date.now()>=cfg.expectedStartTime*1000-30000)throw Error('Too late: live start requires at least 30 seconds before opening');
  });
  if(mode==='live'){
   if(report.stages.some(s=>s.status==='FAIL'))throw Error('Launch checks failed');
@@ -52,8 +56,8 @@ try{
   await stage('Live multi-wallet Mint',()=>node(['multi-mint.mjs','run','--live'],0));
  }else{
   print('No valid transaction will be broadcast; signatures stay in memory.');
-  await stage('Offline regression tests',()=>node(['--test','core.test.mjs','multi.test.mjs','rpc-pool.test.mjs','retry.test.mjs','resilience.test.mjs']));
-  await stage('Runtime syntax',async()=>{for(const f of ['multi-mint.mjs','mint.mjs','retry.mjs','rpc-pool.mjs','multi-core.mjs','env.mjs','rpc-read.mjs','run-lock.mjs'])await node(['--check',f]);});
+  await stage('Offline regression tests',()=>node(['--test','core.test.mjs','multi.test.mjs','rpc-pool.test.mjs','retry.test.mjs','resilience.test.mjs','optimization.test.mjs','workflow.test.mjs']));
+  await stage('Runtime syntax',async()=>{for(const f of ['multi-mint.mjs','mint.mjs','retry.mjs','rpc-pool.mjs','multi-core.mjs','env.mjs','rpc-read.mjs','run-lock.mjs','runtime.mjs','head-watcher.mjs','journal.mjs','sale-status.mjs','recover.mjs','explorer.mjs'])await node(['--check',f]);});
   if(cfg){
    await stage('All read nodes: chain, freshness, receipt and contract',async()=>{
     const {RpcPool}=await import('./rpc-pool.mjs');const {CHAIN,NFT,abi}=await import('./core.mjs');
@@ -88,7 +92,7 @@ try{
      if(results.some(r=>r.status==='rejected'))throw Error('One or more broadcast endpoints failed');
     }finally{pool.close();}
    });
-   await stage('Six-wallet eligibility, balance, nonce, budgets, simulation and offline signature',()=>node(['multi-mint.mjs','prepare']));
+   await stage('Configured-wallet eligibility, balance, nonce, budgets, simulation and offline signature',()=>node(['multi-mint.mjs','prepare']));
   }
  }
 }catch(e){report.stages.push({name:'Launcher',status:'FAIL',reason:e.message});print('ERROR: '+e.message);}

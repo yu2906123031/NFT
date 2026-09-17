@@ -5,11 +5,14 @@ export class RpcPool {
     this.agent=new https.Agent({keepAlive:true,keepAliveMsecs:1000,maxSockets:sockets,maxFreeSockets:sockets,scheduling:'lifo',timeout:60000});
   }
   async call(url,method,params=[],timeoutMs=this.timeoutMs){
+    return this.prepareCall(url,method,params,timeoutMs)();
+  }
+  prepareCall(url,method,params=[],timeoutMs=this.timeoutMs){
     if(method==='eth_sendRawTransaction'&&params[0]!=='0x'&&!this.allowBroadcast)throw Error('Real broadcast disabled');
     if(!['eth_chainId','eth_getBlockByNumber','eth_call','eth_getBalance','eth_getTransactionCount','eth_gasPrice','eth_estimateGas','eth_getTransactionReceipt','eth_sendRawTransaction'].includes(method))throw Error('Unsupported RPC method');
     const id=++this.id;
-    const body=JSON.stringify({jsonrpc:'2.0',id,method,params});
-    return new Promise((resolve,reject)=>{
+    const body=Buffer.from(JSON.stringify({jsonrpc:'2.0',id,method,params}));
+    return ()=>new Promise((resolve,reject)=>{
       const req=https.request(url,{method:'POST',agent:this.agent,headers:{'content-type':'application/json','content-length':Buffer.byteLength(body)},signal:AbortSignal.timeout(timeoutMs)},res=>{
         let content='',size=0;
         res.setEncoding('utf8');
@@ -23,6 +26,10 @@ export class RpcPool {
           if(Object.hasOwn(data,'error')&&Object.hasOwn(data,'result'))return reject(Error('Ambiguous RPC response'));
           if(data.error){
             const e=Error('RPC error code '+Number(data.error.code));e.code=Number(data.error.code);
+            // Keep only a controlled classification, never arbitrary server text.
+            const message=String(data.error.message??'').toLowerCase();
+            e.broadcastStatus=/already known|known transaction/.test(message)?'already_known':
+              /nonce too low|nonce has already been used/.test(message)?'nonce_too_low':'rpc_error';
             if(typeof data.error.data==='string'&&/^0x[0-9a-f]*$/i.test(data.error.data))e.data=data.error.data;
             return reject(e);
           }
