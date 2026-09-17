@@ -1,0 +1,62 @@
+{
+  "readRpcs": [
+    "https://rpc.mainnet.chain.robinhood.com",
+    "https://robinhood-rpc.publicnode.com",
+    "https://robinhood.api.pocket.network"
+  ],
+  "broadcastRpcs": [
+    "https://sequencer.mainnet.chain.robinhood.com",
+    "https://rpc.mainnet.chain.robinhood.com",
+    "https://robinhood-rpc.publicnode.com",
+    "https://robinhood.api.pocket.network",
+    "https://robinhood.rpc.blxrbdn.com",
+    "https://rpc-robinhood.blockmachine.io",
+    "https://rpc.solidrpc.io/public/evm/4663",
+    "https://robinhood.drpc.org"
+  ],
+  "totalGasBudgetEth": "0.006",
+  "wallets": [
+    {
+      "label": "wallet1",
+      "keyEnv": "MINT_PRIVATE_KEY",
+      "address": "0xae4154c083024820b5df3b15db6120141c32e8ca",
+      "mode": "clock",
+      "enabled": true
+    },
+    {
+      "label": "wallet2",
+      "keyEnv": "MINT_PRIVATE_KEY_2",
+      "address": null,
+      "mode": "clock",
+      "enabled": true
+    },
+    {
+      "label": "wallet3",
+      "keyEnv": "MINT_PRIVATE_KEY_3",
+      "address": null,
+      "mode": "clock",
+      "enabled": true
+    },
+    {
+      "label": "wallet4",
+      "keyEnv": "MINT_PRIVATE_KEY_4",
+      "address": null,
+      "mode": "chain",
+      "enabled": true
+    },
+    {
+      "label": "wallet5",
+      "keyEnv": "MINT_PRIVATE_KEY_5",
+      "address": null,
+      "mode": "chain",
+      "enabled": true
+    },
+    {
+      "label": "wallet6",
+      "keyEnv": "MINT_PRIVATE_KEY_6",
+      "address": null,
+      "mode": "chain",
+      "enabled": true
+    }
+  ]
+}

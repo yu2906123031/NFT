@@ -1,0 +1,16 @@
+node_modules/
+.env
+*.local.json
+*.log
+.ENV
+
+multi-run.lock
+
+# Local credentials and generated execution records
+.env.*
+!.env.example
+钱包.txt
+reports/
+live-*-test-result.json
+*.pem
+*.key

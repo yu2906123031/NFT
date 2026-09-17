@@ -1,0 +1,25 @@
+{
+  "readRpc": "https://rpc.mainnet.chain.robinhood.com",
+  "broadcastRpcs": [
+    "https://sequencer.mainnet.chain.robinhood.com",
+    "https://rpc.mainnet.chain.robinhood.com",
+    "https://robinhood-rpc.publicnode.com",
+    "https://robinhood.api.pocket.network",
+    "https://robinhood.rpc.blxrbdn.com",
+    "https://rpc-robinhood.blockmachine.io",
+    "https://rpc.solidrpc.io/public/evm/4663",
+    "https://robinhood.drpc.org"
+  ],
+  "expectedStartTime": 1789653620,
+  "autoStartTime": true,
+  "trigger": "chain",
+  "pollMs": 150,
+  "prepareSeconds": 60,
+  "rpcTimeoutMs": 3000,
+  "receiptTimeoutSeconds": 120,
+  "gasLimit": 420000,
+  "maxFeeGwei": null,
+  "maxGasBudgetEth": "0.001",
+  "walletAddress": "0xae4154c083024820b5df3b15db6120141c32e8ca",
+  "gasPriceMultiplier": 4
+}
