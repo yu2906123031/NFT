@@ -27,7 +27,7 @@ const blockHash='0x'+'ab'.repeat(32),fee='0x'+'12'.repeat(20);
 const receipts=new Map(),events=[];
 const cfg={readRpc:'https://read-a.invalid',readRpcs:['https://read-a.invalid','https://read-b.invalid'],
   broadcastRpcs:['https://send-a.invalid','https://send-b.invalid'],
-  expectedStartTime:1,autoStartTime:true,trigger:'chain',pollMs:100,prepareSeconds:60,
+  useSequencerFeed:false,expectedStartTime:1,autoStartTime:true,trigger:'chain',pollMs:100,prepareSeconds:60,
   rpcTimeoutMs:500,sendTimeoutMs:400,receiptTimeoutSeconds:10,chainWaitTimeoutSeconds:10,
   gasPriceMultiplier:2,gasLimit:420000,maxGasBudgetEth:'0.001',totalGasBudgetEth:'0.006',
   wallets:wallets.map((w,i)=>({label:'wallet'+i,keyEnv:i?'MINT_PRIVATE_KEY_2':'MINT_PRIVATE_KEY',mode:'chain',address:w.address}))};

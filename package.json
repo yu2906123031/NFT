@@ -6,13 +6,14 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test core.test.mjs multi.test.mjs rpc-pool.test.mjs retry.test.mjs resilience.test.mjs optimization.test.mjs workflow.test.mjs",
+    "test": "node --test core.test.mjs multi.test.mjs rpc-pool.test.mjs retry.test.mjs resilience.test.mjs optimization.test.mjs workflow.test.mjs feed.test.mjs",
     "check": "node mint.mjs check",
     "bench": "node mint.mjs bench",
     "multi:check": "node multi-mint.mjs check",
     "multi:bench": "node multi-mint.mjs bench",
     "multi:prepare": "node multi-mint.mjs prepare",
-    "recover": "node recover.mjs"
+    "recover": "node recover.mjs",
+    "bench:local": "node bench-local.mjs"
   },
   "dependencies": {
     "ethers": "6.16.0"

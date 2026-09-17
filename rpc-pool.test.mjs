@@ -91,3 +91,51 @@ test('server broadcast errors expose controlled classifications only',async t=>{
       e=>e.broadcastStatus==='nonce_too_low'&&!e.message.includes('secret-value'));
   }finally{pool.close();}
 });
+
+test('timing reports response latency and reuse without changing RPC results',async t=>{
+  t.mock.method(https,'request',(url,options,callback)=>{
+    const req=new EventEmitter();req.reusedSocket=true;
+    req.end=body=>queueMicrotask(()=>{
+      req.emit('finish');
+      const res=new EventEmitter();res.statusCode=200;res.setEncoding=()=>{};
+      callback(res);res.emit('data',JSON.stringify({jsonrpc:'2.0',id:JSON.parse(body).id,result:'0x1237'}));res.emit('end');
+    });return req;
+  });
+  const pool=new RpcPool();let timing;
+  try{
+    assert.equal(await pool.call('https://example.invalid','eth_chainId',[],1000,t=>timing=t),'0x1237');
+    assert.equal(timing.reusedSocket,true);assert.ok(timing.totalMs>=timing.firstByteMs);
+    assert.ok(timing.requestWrittenMs>=0);assert.equal(timing.tlsMs,null);
+  }finally{pool.close();}
+});
+test('HTTP 429 and RPC rate limiting are not accepted as healthy invalid-payload probes',async t=>{
+  let status=429;
+  t.mock.method(https,'request',(url,options,callback)=>{
+    const req=new EventEmitter();req.end=body=>queueMicrotask(()=>{
+      const res=new EventEmitter();res.statusCode=status;res.headers={'retry-after':'7'};res.setEncoding=()=>{};
+      callback(res);res.emit('data',JSON.stringify({jsonrpc:'2.0',id:JSON.parse(body).id,error:{code:-32000,message:'rate limit exceeded'}}));res.emit('end');
+    });return req;
+  });
+  const pool=new RpcPool();
+  try{
+    await assert.rejects(pool.probe('https://example.invalid'),e=>e.rateLimited&&e.retryAfterMs===7000);
+    status=200;pool.cooldowns.clear();
+    await assert.rejects(pool.probe('https://example.invalid'),e=>e.rateLimited&&e.retryAfterMs===7000);
+  }finally{pool.close();}
+});
+
+test('shared endpoint cooldown suppresses repeated requests after rate limiting',async t=>{
+  let requests=0;
+  t.mock.method(https,'request',(url,options,callback)=>{
+    requests++;const req=new EventEmitter();req.end=()=>queueMicrotask(()=>{
+      const res=new EventEmitter();res.statusCode=429;res.headers={'retry-after':'10'};res.setEncoding=()=>{};
+      callback(res);res.emit('data','{}');res.emit('end');
+    });return req;
+  });
+  const pool=new RpcPool();
+  try{
+    await assert.rejects(pool.call('https://example.invalid','eth_chainId'),e=>e.rateLimited);
+    await assert.rejects(pool.call('https://example.invalid','eth_getTransactionReceipt',['hash']),e=>e.rateLimited&&e.fromCooldown);
+    assert.equal(requests,1);
+  }finally{pool.close();}
+});

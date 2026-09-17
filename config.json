@@ -22,5 +22,8 @@
   "receiptPollMs": 150,
   "reserveRetryBudget": true,
   "allowPartialWallets": true,
-  "minReadyWallets": 1
+  "minReadyWallets": 1,
+  "useSequencerFeed": true,
+  "feedStallMs": 2000,
+  "backupPollMs": 1000
 }

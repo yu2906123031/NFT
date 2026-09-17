@@ -18,6 +18,10 @@ async function main(){
   const command=process.argv[2]??'check';
   if(!['check','prepare','bench','run'].includes(command))throw Error('Usage: node multi-mint.mjs check|prepare|bench|run [--live]');
   const live=command==='run'&&process.argv.includes('--live');
+  if(command==='bench'){
+    const {runLocalBenchmark}=await import('./local-bench.mjs');
+    await runLocalBenchmark({single:process.env.MINT_SINGLE==='1'});return;
+  }
   await loadLocalEnv();
   const base=await json(process.env.MINT_CONFIG||new URL('config.json',root));
   const single=process.env.MINT_SINGLE==='1';
@@ -42,20 +46,6 @@ async function main(){
   const updateJournal=()=>{const snapshot=[...unresolved.values()];journalQueue=journalQueue.then(()=>savePending(snapshot));return journalQueue;};
   try{
     if(live){releaseLock=await acquireRunLock(new URL('multi-run.lock',root));await assertNoPending();}
-    if(command==='bench'){
-      console.log('Invalid-payload latency, NOT real inclusion latency. No valid transaction sent.');
-      const result=await Promise.allSettled(urls.map(async(url,index)=>{
-        const times=[];let failures=0;
-        for(let i=0;i<12;i++){
-          try{const ms=await writes.probe(url,cfg.rpcTimeoutMs);if(i)times.push(ms);}catch{failures++;}
-          await sleep(250);
-        }
-        times.sort((a,b)=>a-b);
-        return {endpoint:index,host:new URL(url).hostname,samples:times.length,failures,p50Ms:times[Math.floor(times.length*.5)]??null,p95Ms:times[Math.floor(times.length*.95)]??null};
-      }));
-      for(const r of result)console.log(r.status==='fulfilled'?r.value:{problem:'probe failed'});
-      return;
-    }
     const {loaded:wallets,issues}=loadWallets(cfg.wallets,process.env);
     for(const key of Object.keys(process.env))if(/^MINT_PRIVATE_KEY(?:_[1-6])?$/.test(key)||key==='PRIVATE_KEY')delete process.env[key];
     for(const issue of issues)console.log(issue);
@@ -158,8 +148,12 @@ async function main(){
     const prepared=await collect(s,true);
     if(prepared.failed)throw Error('Preparation failed; no broadcast');
     const plans=await sign(prepared.plans);
-    const preparedWrites=new Map();
-    const prepareWrites=p=>preparedWrites.set(p.raw,new Map(urls.map(url=>[url,writes.prepareCall(url,'eth_sendRawTransaction',[p.raw])])));
+    const preparedWrites=new Map(),transportTimings=new Map();
+    const prepareWrites=p=>{
+      const timings=[];transportTimings.set(p.hash,timings);
+      preparedWrites.set(p.raw,new Map(urls.map((url,index)=>[url,writes.prepareCall(url,'eth_sendRawTransaction',[p.raw],cfg.sendTimeoutMs,
+        timing=>timings.push({endpoint:index,...timing}))])));
+    };
     plans.forEach(prepareWrites);
     const sendPrepared=(url,method,[raw])=>{
       const send=preparedWrites.get(raw)?.get(url);
@@ -167,8 +161,8 @@ async function main(){
       return send();
     };
     watcher=new HeadWatcher({urls:activeReads,rpc:reads.call.bind(reads),wsUrl:process.env.READ_WS_RPC||'',
-      pollMs:cfg.pollMs,timeoutMs:Math.min(cfg.rpcTimeoutMs,1000)}).start();
-    if(!process.env.READ_WS_RPC)console.log('No READ_WS_RPC configured; shared HTTP opening-block watcher enabled.');
+      pollMs:cfg.pollMs,timeoutMs:Math.min(cfg.rpcTimeoutMs,1000),useSequencerFeed:cfg.useSequencerFeed,feedStallMs:cfg.feedStallMs,backupPollMs:cfg.backupPollMs}).start();
+    console.log(cfg.useSequencerFeed?'Official feed enabled; RPC anchor and shared HTTP fallback active.':'Official feed disabled; standard WSS / shared HTTP watcher active.');
     const warmConnections=async()=>{
       const result=await Promise.allSettled(urls.map(async(url,index)=>{
         const replies=await Promise.allSettled(Array.from({length:plans.length},()=>writes.probe(url,1000)));
@@ -211,6 +205,7 @@ async function main(){
       chain:async()=>{
         const result=await watcher.waitForOpen(s.drop.startTime,s.drop.endTime,cfg.chainWaitTimeoutSeconds*1000);
         runReport.triggerSource=result.source;
+        runReport.trigger={source:result.source,blockNumber:String(BigInt(result.block.number)),receivedAt:result.receivedAt,receivedMono:result.receivedMono};
         // Negative offsets are clock-only: chain mode never sends before an opening head.
         if(cfg.sendOffsetMs>0)await waitUntil(start+cfg.sendOffsetMs);
       }
@@ -238,7 +233,7 @@ async function main(){
       const wallet=wallets.find(w=>w.label===p.label);
       try{
         for(let attempt=0;attempt<2;attempt++){
-          const attemptReport={label:p.label,attempt,mode:p.mode,hash:p.hash,sentAt:Date.now(),sendOffsetMs:Date.now()-start,submitted:false,routes:[]};
+          const attemptReport={label:p.label,attempt,mode:p.mode,hash:p.hash,sentAt:Date.now(),sendOffsetMs:Date.now()-start,submitted:false,transport:transportTimings.get(p.hash),triggerToDispatchMs:runReport.trigger?.receivedMono!=null?performance.now()-runReport.trigger.receivedMono:null,routes:[]};
           sentLabels.add(p.label);
           const submission=fanout(p,urls,sendPrepared,(label,index,ok,ms,status)=>{
             attemptReport.routes.push({endpoint:index,accepted:ok,responseMs:ms,status});
@@ -282,6 +277,7 @@ async function main(){
     runReport.error=message.length>180||/private|secret/i.test(message)?'Operation failed; sensitive details suppressed':message;
     throw e;
   }finally{
+    if(watcher?.feed)runReport.feed={state:watcher.feed.state,...watcher.feed.stats};
     watcher?.close();reads.close();writes.close();
     if(live&&releaseLock){
       runReport.finishedAt=new Date().toISOString();

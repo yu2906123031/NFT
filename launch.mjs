@@ -56,9 +56,10 @@ try{
   await stage('Live multi-wallet Mint',()=>node(['multi-mint.mjs','run','--live'],0));
  }else{
   print('No valid transaction will be broadcast; signatures stay in memory.');
-  await stage('Offline regression tests',()=>node(['--test','core.test.mjs','multi.test.mjs','rpc-pool.test.mjs','retry.test.mjs','resilience.test.mjs','optimization.test.mjs','workflow.test.mjs']));
-  await stage('Runtime syntax',async()=>{for(const f of ['multi-mint.mjs','mint.mjs','retry.mjs','rpc-pool.mjs','multi-core.mjs','env.mjs','rpc-read.mjs','run-lock.mjs','runtime.mjs','head-watcher.mjs','journal.mjs','sale-status.mjs','recover.mjs','explorer.mjs'])await node(['--check',f]);});
+  await stage('Offline regression tests',()=>node(['--test','core.test.mjs','multi.test.mjs','rpc-pool.test.mjs','retry.test.mjs','resilience.test.mjs','optimization.test.mjs','workflow.test.mjs','feed.test.mjs']));
+  await stage('Runtime syntax',async()=>{for(const f of ['multi-mint.mjs','mint.mjs','retry.mjs','rpc-pool.mjs','multi-core.mjs','env.mjs','rpc-read.mjs','run-lock.mjs','runtime.mjs','head-watcher.mjs','journal.mjs','sale-status.mjs','recover.mjs','explorer.mjs','sequencer-feed.mjs','local-bench.mjs','bench-local.mjs','latency.mjs'])await node(['--check',f]);});
   if(cfg){
+   await stage('Local latency and official feed (read only)',()=>node(['bench-local.mjs','--seconds','8','--samples','5'],60000));
    await stage('All read nodes: chain, freshness, receipt and contract',async()=>{
     const {RpcPool}=await import('./rpc-pool.mjs');const {CHAIN,NFT,abi}=await import('./core.mjs');
     const pool=new RpcPool({timeoutMs:cfg.rpcTimeoutMs});

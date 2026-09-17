@@ -1,12 +1,12 @@
 import {parseEther} from 'ethers';
 export function runtimeOptions(cfg){
   const values={sendOffsetMs:0,sendTimeoutMs:1000,chainWaitTimeoutSeconds:60,receiptPollMs:150,
-    reserveRetryBudget:true,allowPartialWallets:true,minReadyWallets:1,...cfg};
+    useSequencerFeed:true,feedStallMs:2000,backupPollMs:1000,reserveRetryBudget:true,allowPartialWallets:true,minReadyWallets:1,...cfg};
   for(const [key,lo,hi] of [['sendOffsetMs',-1000,1000],['sendTimeoutMs',200,3000],
-    ['chainWaitTimeoutSeconds',10,600],['receiptPollMs',100,5000],['minReadyWallets',1,6]]){
+    ['chainWaitTimeoutSeconds',10,600],['receiptPollMs',100,5000],['minReadyWallets',1,6],['feedStallMs',1000,15000],['backupPollMs',500,5000]]){
     if(!Number.isInteger(values[key])||values[key]<lo||values[key]>hi)throw Error('Invalid '+key);
   }
-  for(const key of ['reserveRetryBudget','allowPartialWallets'])
+  for(const key of ['reserveRetryBudget','allowPartialWallets','useSequencerFeed'])
     if(typeof values[key]!=='boolean')throw Error('Invalid '+key);
   return values;
 }
